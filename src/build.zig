@@ -26,6 +26,7 @@ pub fn addRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
         .rtextures = options.rtextures,
         .platform_drm = options.platform_drm,
         .shared = options.shared,
+        .window_backend = options.window_backend,
         .linux_display_backend = options.linux_display_backend,
         .opengl_version = options.opengl_version,
     });
@@ -71,7 +72,7 @@ fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
     raylib.linkLibC();
 
     // No GLFW required on PLATFORM_DRM
-    if (!options.platform_drm) {
+    if (!options.platform_drm and options.window_backend == .GLFW) {
         raylib.addIncludePath(b.path("src/external/glfw/include"));
     }
 
@@ -100,16 +101,23 @@ fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
 
     switch (target.result.os.tag) {
         .windows => {
-            try c_source_files.append("rglfw.c");
             raylib.linkSystemLibrary("winmm");
             raylib.linkSystemLibrary("gdi32");
             raylib.linkSystemLibrary("opengl32");
 
-            raylib.defineCMacro("PLATFORM_DESKTOP", null);
+            switch (options.window_backend) {
+                .GLFW => {
+                    try c_source_files.append("rglfw.c");
+                    raylib.defineCMacro("PLATFORM_DESKTOP", null);
+                },
+                .SDL => {
+                    raylib.linkSystemLibrary("SDL2");
+                    raylib.defineCMacro("PLATFORM_DESKTOP_SDL", null);
+                },
+            }
         },
         .linux => {
             if (!options.platform_drm) {
-                try c_source_files.append("rglfw.c");
                 raylib.linkSystemLibrary("GL");
                 raylib.linkSystemLibrary("rt");
                 raylib.linkSystemLibrary("dl");
@@ -117,14 +125,31 @@ fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
 
                 raylib.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
                 raylib.addIncludePath(.{ .cwd_relative = "/usr/include" });
-                if (options.linux_display_backend == .X11 or options.linux_display_backend == .Both) {
 
+                switch (options.window_backend) {
+                    .GLFW => {
+                        try c_source_files.append("rglfw.c");
+                        raylib.defineCMacro("PLATFORM_DESKTOP", null);
+                    },
+                    .SDL => {
+                        raylib.linkSystemLibrary("SDL2");
+                        raylib.defineCMacro("PLATFORM_DESKTOP_SDL", null);
+                    },
+                }
+
+                if (options.linux_display_backend == .X11 or options.linux_display_backend == .Both) {
+                    if (options.window_backend == .GLFW) {
                         raylib.defineCMacro("_GLFW_X11", null);
-                        raylib.linkSystemLibrary("X11");
+                    }
+
+                    raylib.linkSystemLibrary("X11");
                 }
 
                 if (options.linux_display_backend == .Wayland or options.linux_display_backend == .Both) {
-                    raylib.defineCMacro("_GLFW_WAYLAND", null);
+                    if (options.window_backend == .GLFW) {
+                        raylib.defineCMacro("_GLFW_WAYLAND", null);
+                    }
+
                     raylib.linkSystemLibrary("wayland-client");
                     raylib.linkSystemLibrary("wayland-cursor");
                     raylib.linkSystemLibrary("wayland-egl");
@@ -140,7 +165,6 @@ fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
                     waylandGenerate(b, raylib, "xdg-activation-v1.xml", "xdg-activation-v1-client-protocol");
                     waylandGenerate(b, raylib, "idle-inhibit-unstable-v1.xml", "idle-inhibit-unstable-v1-client-protocol");
                 }
-                raylib.defineCMacro("PLATFORM_DESKTOP", null);
             } else {
                 if (options.opengl_version == .auto) {
                     raylib.linkSystemLibrary("GLESv2");
@@ -162,7 +186,6 @@ fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
             }
         },
         .freebsd, .openbsd, .netbsd, .dragonfly => {
-            try c_source_files.append("rglfw.c");
             raylib.linkSystemLibrary("GL");
             raylib.linkSystemLibrary("rt");
             raylib.linkSystemLibrary("dl");
@@ -174,23 +197,40 @@ fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
             raylib.linkSystemLibrary("Xxf86vm");
             raylib.linkSystemLibrary("Xcursor");
 
-            raylib.defineCMacro("PLATFORM_DESKTOP", null);
+            switch (options.window_backend) {
+                .GLFW => {
+                    try c_source_files.append("rglfw.c");
+                    raylib.defineCMacro("PLATFORM_DESKTOP", null);
+                },
+                .SDL => {
+                    raylib.linkSystemLibrary("SDL2");
+                    raylib.defineCMacro("PLATFORM_DESKTOP_SDL", null);
+                },
+            }
         },
         .macos => {
-            // On macos rglfw.c include Objective-C files.
-            try raylib_flags_arr.append(b.allocator, "-ObjC");
-            raylib.root_module.addCSourceFile(.{
-                .file = b.path("src/rglfw.c"),
-                .flags = raylib_flags_arr.items,
-            });
-            _ = raylib_flags_arr.pop();
             raylib.linkFramework("Foundation");
             raylib.linkFramework("CoreServices");
             raylib.linkFramework("CoreGraphics");
             raylib.linkFramework("AppKit");
             raylib.linkFramework("IOKit");
 
-            raylib.defineCMacro("PLATFORM_DESKTOP", null);
+            switch (options.window_backend) {
+                .GLFW => {
+                    // On macos rglfw.c include Objective-C files.
+                    try raylib_flags_arr.append(b.allocator, "-ObjC");
+                    raylib.root_module.addCSourceFile(.{
+                        .file = b.path("src/rglfw.c"),
+                        .flags = raylib_flags_arr.items,
+                    });
+                    _ = raylib_flags_arr.pop();
+                    raylib.defineCMacro("PLATFORM_DESKTOP", null);
+                },
+                .SDL => {
+                    raylib.linkSystemLibrary("SDL2");
+                    raylib.defineCMacro("PLATFORM_DESKTOP_SDL", null);
+                },
+            }
         },
         .emscripten => {
             raylib.defineCMacro("PLATFORM_WEB", null);
@@ -251,10 +291,22 @@ pub const Options = struct {
     raygui: bool = false,
     platform_drm: bool = false,
     shared: bool = false,
+    window_backend: WindowBackend = .GLFW,
     linux_display_backend: LinuxDisplayBackend = .Both,
     opengl_version: OpenglVersion = .auto,
 
     raygui_dependency_name: []const u8 = "raygui",
+};
+
+pub const WindowBackend = enum {
+    GLFW,
+    SDL,
+};
+
+pub const LinuxDisplayBackend = enum {
+    X11,
+    Wayland,
+    Both,
 };
 
 pub const OpenglVersion = enum {
@@ -279,12 +331,6 @@ pub const OpenglVersion = enum {
     }
 };
 
-pub const LinuxDisplayBackend = enum {
-    X11,
-    Wayland,
-    Both,
-};
-
 pub fn build(b: *std.Build) !void {
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
@@ -305,7 +351,8 @@ pub fn build(b: *std.Build) !void {
         .rtextures = b.option(bool, "rtextures", "Compile with textures support") orelse defaults.rtextures,
         .rshapes = b.option(bool, "rshapes", "Compile with shapes support") orelse defaults.rshapes,
         .shared = b.option(bool, "shared", "Compile as shared library") orelse defaults.shared,
-        .linux_display_backend = b.option(LinuxDisplayBackend, "linux_display_backend", "Linux display backend to use") orelse defaults.linux_display_backend,
+        .window_backend = b.option(WindowBackend, "window_backend", "Window backend to use (GLFW/SDL)") orelse defaults.window_backend,
+        .linux_display_backend = b.option(LinuxDisplayBackend, "linux_display_backend", "Linux display backend to use (X11/Wayland/Both)") orelse defaults.linux_display_backend,
         .opengl_version = b.option(OpenglVersion, "opengl_version", "OpenGL version to use") orelse defaults.opengl_version,
     };
 
